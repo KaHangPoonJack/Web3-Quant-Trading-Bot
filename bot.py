@@ -242,6 +242,10 @@ while True:
     now_datetime = datetime.now()
     ATR_period = 5
     now_UTCtime = int(time.time())
+    highest_20bar = 0
+    ATR_5_avg = 0
+    atr = 0
+    RSI = 0
     if bars:    
         last_close = bars[-1]["close"]
     else:
@@ -311,7 +315,8 @@ while True:
         high_bar_20Trigger = True
     else:
         high_bar_20Trigger = False
-    if atr > (1.5 * ATR_5_avg):
+    ATR_compare = (1.5 * ATR_5_avg)
+    if atr > ATR_compare:
         ATR_trigger = True
     else:
         ATR_trigger = False
