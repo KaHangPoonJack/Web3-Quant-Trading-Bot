@@ -273,7 +273,7 @@ while True:
             price_data_15min = []
             print(bars)
     
-    if now_datetime.minute % time_frame == 0 and now_datetime.second == 0:
+    if now_datetime.minute % time_frame == 0 and now_datetime.second == 0 and bars:
         # calculate the 20 bar highest    
         high_price_15min = bars[-1]["high"]
         price_data_20high.append(high_price_15min)
