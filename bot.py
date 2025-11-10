@@ -4,16 +4,10 @@ import hmac
 import hashlib
 import pandas as pd
 import numpy as np
-import json
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
-import os
-import threading
 from flask import Flask, render_template_string
 import plotly.graph_objects as go
-import gzip
-import io
 from urllib.parse import urlparse
 # ================================
 # Configuration and Setup
@@ -26,7 +20,6 @@ HORUS_URL = "https://api-horus.com"
 HORUS_API_KEY = "dcca142de11f3c3a6db14d91757a8ed2dc9bd8ebbd92103d65946deecf82e9ee"
 
 # --- STATE ---
-state = {"equity": 10000, "peak": 10000, "pos": 0, "entry": 0, "trades_today": 0, "last_date": "", "prices": []}
 price_data_20high = []
 price_data_15min = []
 last_second = -1
@@ -39,6 +32,16 @@ high_bar_20Trigger = False
 ATR_trigger = False
 RSI_trigger = False
 Have_order = False
+
+time_frame = 15 #15min
+ATR_period = 5
+highest_20bar = 0
+ATR_5_avg = 0
+atr = 0
+RSI = 0
+enter_amount = 0
+enter_price = 0
+current_price = 0
 
 # ------------------------------
 # Utility Functions
@@ -238,14 +241,8 @@ def cancel_order(order_id=None, pair=None):
 # ================================
 
 while True:
-    time_frame = 15 #15min
     now_datetime = datetime.now()
-    ATR_period = 5
     now_UTCtime = int(time.time())
-    highest_20bar = 0
-    ATR_5_avg = 0
-    atr = 0
-    RSI = 0
     if bars:    
         last_close = bars[-1]["close"]
     else:
@@ -262,7 +259,10 @@ while True:
         now_datetime.second == 0:
             high = max(price_data_15min)
             low = min(price_data_15min)
-            true_range = max(high, last_close) - min(low, last_close)
+            if last_close is None:
+                true_range = high - low
+            else:
+                true_range = max(high, last_close) - min(low, last_close)
             bar = {"high": high,
                    "low": low,
                    "close": current_price,
@@ -308,7 +308,11 @@ while True:
             negative_sum = sum(abs(dp) for dp in deltas if dp < 0)
             Avg_gain = positive_sum / 14
             Avg_loss = negative_sum / 14
-            RSI = 100 - (100/(1 + (Avg_gain / Avg_loss)))
+            if Avg_loss == 0:
+                RSI = 100
+            else:
+                RS = Avg_gain / Avg_loss
+                RSI = 100 - (100/(1 + (RS)))
         print (RSI)
 
     if current_price > highest_20bar:
