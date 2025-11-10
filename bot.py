@@ -20,8 +20,8 @@ from urllib.parse import urlparse
 # ================================
 
 BASE_URL = "https://mock-api.roostoo.com"
-API_KEY = "1wTiMoRzY54R5EU8yfhFi4USVSYNR3sNhP32aCGeTlnNvlvfu81MRGSoRaLDG9HG"
-SECRET_KEY = "JPYRMsOA91oNuRUPo4wYoM5iHOjSdhoBWCCEHBHfI35zJUXJYw0WgyvRhOC49A3q"
+API_KEY = "R5tY9uIpcN3vB1kMH7qD2wXaL0oG6eZfsP8jK4QraV1mT7UyxC5nF3WdJ2yS8lGo"
+SECRET_KEY = "L9ZxCV1bN3mQwE5rT7yUiP9oA1sDdF3gJ5hKlZ7xC9vBnM1qW3eRtY5uI7oP"
 HORUS_URL = "https://api-horus.com"
 HORUS_API_KEY = "dcca142de11f3c3a6db14d91757a8ed2dc9bd8ebbd92103d65946deecf82e9ee"
 
@@ -343,4 +343,3 @@ while True:
             print (get_balance())
 
     time.sleep(1)
-
