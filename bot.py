@@ -43,7 +43,7 @@ prev_dir = None  # To track for signals
 buy_signal = False
 sell_signal = False
 
-st_factor = 3.0
+st_factor = 3.5
 st_atr_period = 10
 st_atr = 0.0
 up = 0.0
@@ -54,7 +54,7 @@ supertrend = 0.0
 prev_supertrend = 0.0
 is_uptrend = False
 
-time_frame = 15 #15min
+time_frame = 15
 ATR_period = 22
 highest_20bar = 0
 ATR_5_avg = 0
@@ -340,7 +340,7 @@ while True:
                 highest = max(highs)
                 lowest = min(lows)
     
-            ce_atr = 3 * atr
+            ce_atr = 3.5 * atr
     
             long_stop = highest - ce_atr
             short_stop = lowest + ce_atr
