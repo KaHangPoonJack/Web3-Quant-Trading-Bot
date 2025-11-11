@@ -43,7 +43,7 @@ prev_dir = None  # To track for signals
 buy_signal = False
 sell_signal = False
 
-st_factor = 3.5
+st_factor = 3
 st_atr_period = 10
 st_atr = 0.0
 up = 0.0
@@ -451,10 +451,10 @@ while True:
         usd_free = get_balance().get('SpotWallet', {}).get('USD', {}).get('Free', 0)
         print("Previous USD Free Balance:", usd_free)
         amount = usd_free / current_price
-        int_amount = math.floor(amount)
-        print(place_order(currency, "BUY", amount))
+        int_amount = round(amount, 3) - 0.001
+        print(place_order(currency, "BUY", int_amount))
         enter_price = current_price
-        enter_amount = amount
+        enter_amount = int_amount
         print("Enter Price: ", enter_price, "Enter Amount: ", enter_amount)
         print(get_balance())
         Have_order = True
