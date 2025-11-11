@@ -273,13 +273,13 @@ while True:
         last_second = now_UTCtime
         ticker_response = get_ticker(currency)
         if ticker_response is None:
-            print("Failed to fetch ticker data. Skipping this cycle.")
+            print(now_datetime, "Failed to fetch ticker data. Skipping this cycle.")
             time.sleep(1)
             continue
         try:
             current_price = ticker_response["Data"][currency]["LastPrice"]
         except (KeyError, TypeError) as e:
-            print(f"Unexpected ticker response format: {ticker_response}, error: {e}")
+            print(now_datetime, f"Unexpected ticker response format: {ticker_response}, error: {e}")
             time.sleep(1)
             continue
         price_data_15min.append(current_price)
@@ -303,7 +303,7 @@ while True:
             last_close = current_price
             TrueRangeList.append(true_range)
             price_data_15min = []
-            print(bars)
+            print(now_datetime,": ", bar)
     
     if now_datetime.minute % time_frame == 0 and now_datetime.second == 0 and bars:
         # calculate the 20 bar highest    
@@ -325,8 +325,8 @@ while True:
                 atr_averageList = atr_averageList[-5:]
             if len(atr_averageList) == 5:
                 ATR_5_avg = np.mean(atr_averageList[-5:])
-                print ("ATR_5_avg", ATR_5_avg)
-            print ("Average True Range", atr)
+                print (now_datetime, " ATR_5_avg: ", ATR_5_avg)
+            print (now_datetime, " Average True Range: ", atr)
 
         # caculate CE
         if len(bars) >= ATR_period:
@@ -449,10 +449,10 @@ while True:
     
     if buy_signal and not Have_order and is_uptrend:
         usd_free = get_balance().get('SpotWallet', {}).get('USD', {}).get('Free', 0)
-        print("Previous USD Free Balance:", usd_free)
+        print(now_datetime, " Previous USD Free Balance:", usd_free)
         amount = usd_free / current_price
-        int_amount = round(amount, 3) - 0.001
-        print(place_order(currency, "BUY", int_amount))
+        int_amount = round(amount, 3) - 0.005
+        print(now_datetime, ": ", place_order(currency, "BUY", int_amount))
         enter_price = current_price
         enter_amount = int_amount
         print("Enter Price: ", enter_price, "Enter Amount: ", enter_amount)
@@ -461,10 +461,10 @@ while True:
         
     if Have_order:
         order_PL = ((current_price - enter_price)/enter_price) * 100
-        print ("Current P/L: ", order_PL)
+        print (now_datetime, " Current P/L: ", order_PL)
         if (order_PL <= -3.5) or (order_PL >= 5.4) or sell_signal:
             place_order(currency, "SELL", enter_amount)
-            print (get_balance())
+            print (now_datetime, ": ", get_balance())
             Have_order = False
 
     time.sleep(0.5)
