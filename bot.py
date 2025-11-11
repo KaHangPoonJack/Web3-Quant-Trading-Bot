@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from flask import Flask, render_template_string
 import plotly.graph_objects as go
 from urllib.parse import urlparse
+import math
 # ================================
 # Configuration and Setup
 # ================================
@@ -32,9 +33,29 @@ high_bar_20Trigger = False
 ATR_trigger = False
 RSI_trigger = False
 Have_order = False
+use_close = True
+long_stop = None
+short_stop = None
+long_stop_prev = None
+short_stop_prev = None
+dir = 1
+prev_dir = None  # To track for signals
+buy_signal = False
+sell_signal = False
+
+st_factor = 3.0
+st_atr_period = 10
+st_atr = 0.0
+up = 0.0
+down = 0.0
+prev_up = 0.0
+prev_down = 0.0
+supertrend = 0.0
+prev_supertrend = 0.0
+is_uptrend = False
 
 time_frame = 15 #15min
-ATR_period = 5
+ATR_period = 22
 highest_20bar = 0
 ATR_5_avg = 0
 atr = 0
@@ -246,58 +267,155 @@ while True:
     if bars:    
         last_close = bars[-1]["close"]
     else:
-        last_close = None
+        last_close = 0
     # make bar
     if now_UTCtime != last_second:
         last_second = now_UTCtime
-        current_price = get_ticker(currency)["Data"][currency]["LastPrice"]
+        ticker_response = get_ticker(currency)
+        if ticker_response is None:
+            print("Failed to fetch ticker data. Skipping this cycle.")
+            time.sleep(1)
+            continue
+        try:
+            current_price = ticker_response["Data"][currency]["LastPrice"]
+        except (KeyError, TypeError) as e:
+            print(f"Unexpected ticker response format: {ticker_response}, error: {e}")
+            time.sleep(1)
+            continue
         price_data_15min.append(current_price)
-        if len(price_data_15min) > 900:
-            price_data_15min = price_data_15min[-900:]
-        if len(price_data_15min) == 900 and \
+        if len(price_data_15min) > (60 * time_frame):
+            price_data_15min = price_data_15min[-(60 * time_frame):]
+        if len(price_data_15min) == (60 * time_frame) and \
         now_datetime.minute % time_frame == 0 and \
         now_datetime.second == 0:
             high = max(price_data_15min)
             low = min(price_data_15min)
-            if last_close is None:
-                true_range = high - low
+            if bars:
+                true_range = max(high - low, abs(high - last_close), abs(low - last_close))
             else:
-                true_range = max(high, last_close) - min(low, last_close)
+                true_range = high - low
             bar = {"high": high,
                    "low": low,
                    "close": current_price,
                    "TrueRange": true_range}
-            last_close = current_price
             bars.append(bar)
+            prev_price = last_close
+            last_close = current_price
             TrueRangeList.append(true_range)
             price_data_15min = []
             print(bars)
     
     if now_datetime.minute % time_frame == 0 and now_datetime.second == 0 and bars:
         # calculate the 20 bar highest    
-        high_price_15min = bars[-1]["high"]
-        price_data_20high.append(high_price_15min)
+        close_price_15min = bars[-1]["close"]
+        price_data_20high.append(close_price_15min)
         if len(price_data_20high) > 21:
             price_data_20high = price_data_20high[-21:]
         if len(price_data_20high) == 21:
             highest_20bar = max(price_data_20high[-21:-1])
-        print ("20 bar high: ", price_data_20high)
+            #print ("20 bar high: ", highest_20bar)
         
-
         # caculate atr14
         if len(TrueRangeList) > ATR_period + 1:
-            TrueRangeList = TrueRangeList[-6:]
+            TrueRangeList = TrueRangeList[-23:]
         if len(TrueRangeList) == ATR_period + 1:
-            atr = np.mean(TrueRangeList[-6: -1])
+            atr = np.mean(TrueRangeList[-23: -1])
             atr_averageList.append(atr)
             if len(atr_averageList) > 5:
                 atr_averageList = atr_averageList[-5:]
             if len(atr_averageList) == 5:
                 ATR_5_avg = np.mean(atr_averageList[-5:])
-            print ("ATR_5_avg", ATR_5_avg)
-        print ("Average True Range", atr)
+                print ("ATR_5_avg", ATR_5_avg)
+            print ("Average True Range", atr)
 
         # caculate CE
+        if len(bars) >= ATR_period:
+            if use_close:
+                closes = [bar["close"] for bar in bars[-ATR_period:]]
+                highest = max(closes)
+                lowest = min(closes)
+            else:
+                highs = [bar["high"] for bar in bars[-ATR_period:]]
+                lows = [bar["low"] for bar in bars[-ATR_period:]]
+                highest = max(highs)
+                lowest = min(lows)
+    
+            ce_atr = 3 * atr
+    
+            long_stop = highest - ce_atr
+            short_stop = lowest + ce_atr
+    
+            if long_stop_prev is None:
+                # Initial setup
+                long_stop_prev = long_stop
+                short_stop_prev = short_stop
+            else:
+                # Trail using previous close
+                close_prev = bars[-2]["close"]
+                if close_prev > long_stop_prev:
+                    long_stop = max(long_stop, long_stop_prev)
+                if close_prev < short_stop_prev:
+                    short_stop = min(short_stop, short_stop_prev)
+    
+            # Calculate direction using current close and previous stops
+            current_close = bars[-1]["close"]
+            prev_dir = dir
+            if current_close > short_stop_prev:
+                dir = 1
+            elif current_close < long_stop_prev:
+                dir = -1
+            else:
+                dir = prev_dir
+    
+    # Update prev stops for next bar
+            long_stop_prev = long_stop
+            short_stop_prev = short_stop
+    
+    # Generate signals
+            buy_signal = (dir == 1) and (prev_dir == -1)
+            sell_signal = (dir == -1) and (prev_dir == 1)
+
+        # caculate Supertrend
+        if len(TrueRangeList) >= st_atr_period:
+            # Note: Including current TR in the mean, unlike your ATR which excludes it. Adjust if needed.
+            tr_list = TrueRangeList[-st_atr_period:]
+            st_atr = np.mean(tr_list)
+    
+            high = bars[-1]["high"]
+            low = bars[-1]["low"]
+            close = bars[-1]["close"]
+            hl2 = (high + low) / 2
+    
+            up = hl2 - (st_factor * st_atr)
+            down = hl2 + (st_factor * st_atr)
+    
+            if prev_up == 0:  # Initial setup on first calculation
+                prev_up = up
+                prev_down = down
+                prev_supertrend = up  # Arbitrary start, as in standard Supertrend
+            else:
+                close_prev = bars[-2]["close"]
+        
+                # Trail up
+                if close_prev > prev_up:
+                    up = max(up, prev_up)
+        
+                # Trail down
+                if close_prev < prev_down:
+                    down = min(down, prev_down)
+        
+                # Determine supertrend
+                if prev_supertrend == prev_up:
+                    supertrend = up if close > prev_down else down
+                else:
+                    supertrend = down if close < prev_up else up
+    
+            is_uptrend = supertrend < close  # Uptrend if supertrend below price
+    
+            # Update prev for next bar
+            prev_up = up
+            prev_down = down
+            prev_supertrend = supertrend
 
 
         # caculate RSI
@@ -313,7 +431,7 @@ while True:
             else:
                 RS = Avg_gain / Avg_loss
                 RSI = 100 - (100/(1 + (RS)))
-        print (RSI)
+            #print (RSI)
 
     if current_price > highest_20bar:
         high_bar_20Trigger = True
@@ -328,27 +446,24 @@ while True:
         RSI_trigger = True
     else:
         RSI_trigger = False
-
-    if high_bar_20Trigger and ATR_trigger and RSI_trigger:
+    
+    if buy_signal and not Have_order and is_uptrend:
         usd_free = get_balance().get('SpotWallet', {}).get('USD', {}).get('Free', 0)
         print("Previous USD Free Balance:", usd_free)
         amount = usd_free / current_price
-        place_order(currency, "BUY", amount)
+        int_amount = math.floor(amount)
+        print(place_order(currency, "BUY", amount))
         enter_price = current_price
         enter_amount = amount
         print("Enter Price: ", enter_price, "Enter Amount: ", enter_amount)
         print(get_balance())
         Have_order = True
-        ATR_trigger = False
-        high_bar_20Trigger = False
-        RSI_trigger = False
+        
     if Have_order:
         order_PL = ((current_price - enter_price)/enter_price) * 100
-        if order_PL <= -2:
+        if (order_PL <= -3.5) or (order_PL >= 5.4) or sell_signal:
             place_order(currency, "SELL", enter_amount)
             print (get_balance())
-        if order_PL >= 4:
-            place_order(currency, "SELL", enter_amount)
-            print (get_balance())
+            Have_order = False
 
-    time.sleep(1)
+    time.sleep(0.5)
