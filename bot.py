@@ -461,6 +461,7 @@ while True:
         
     if Have_order:
         order_PL = ((current_price - enter_price)/enter_price) * 100
+        print ("Current P/L: ", order_PL)
         if (order_PL <= -3.5) or (order_PL >= 5.4) or sell_signal:
             place_order(currency, "SELL", enter_amount)
             print (get_balance())
