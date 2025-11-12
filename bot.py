@@ -19,6 +19,7 @@ API_KEY = "R5tY9uIpcN3vB1kMH7qD2wXaL0oG6eZfsP8jK4QraV1mT7UyxC5nF3WdJ2yS8lGo"
 SECRET_KEY = "L9ZxCV1bN3mQwE5rT7yUiP9oA1sDdF3gJ5hKlZ7xC9vBnM1qW3eRtY5uI7oP"
 HORUS_URL = "https://api-horus.com"
 HORUS_API_KEY = "dcca142de11f3c3a6db14d91757a8ed2dc9bd8ebbd92103d65946deecf82e9ee"
+BINANCE_URL = "wss://stream.binance.com:9443"
 
 # --- STATE ---
 price_data_20high = []
@@ -63,6 +64,7 @@ RSI = 0
 enter_amount = 0
 enter_price = 0
 current_price = 0
+order_PL = 0
 
 # ------------------------------
 # Utility Functions
@@ -251,6 +253,34 @@ def cancel_order(order_id=None, pair=None):
         print(f"Response text: {e.response.text if e.response else 'N/A'}")
         return None
 
+def place_order_with_retry(pair, side, quantity, max_retries=5, delay_base=1.0):
+
+    for attempt in range(1, max_retries + 1):
+        print(f"Attempt {attempt} to place {side} order for {quantity} {pair}")
+        response = place_order(pair, side, quantity)
+        
+        # Check if API returned a valid response
+        if response is None:
+            print(f" Attempt {attempt}: No response from server.")
+        else:
+            # Success condition per API docs: Success == true AND ErrMsg == ""
+            if response.get("Success", False) and response.get("ErrMsg", "") == "":
+                print(f" Order succeeded on attempt {attempt}: {response}")
+                return response
+            else:
+                err_msg = response.get("ErrMsg", "Unknown error")
+                print(f" Attempt {attempt} failed: {err_msg}")
+                print(f"Full response: {response}")
+
+        # Wait before retrying (exponential backoff)
+        if attempt < max_retries:
+            sleep_time = delay_base * (2 ** (attempt - 1))
+            print(f" Retrying in {sleep_time:.1f} seconds...")
+            time.sleep(sleep_time)
+
+    print(f" All {max_retries} attempts to place {side} order failed.")
+    return None
+
 # ================================
 # TECHNICAL INDICATORS
 # ================================
@@ -260,7 +290,7 @@ def cancel_order(order_id=None, pair=None):
 # ================================
 # MAIN
 # ================================
-
+next_run = time.time()
 while True:
     now_datetime = datetime.now()
     now_UTCtime = int(time.time())
@@ -274,22 +304,21 @@ while True:
         ticker_response = get_ticker(currency)
         if ticker_response is None:
             print(now_datetime, "Failed to fetch ticker data. Skipping this cycle.")
-            time.sleep(1)
+            time.sleep(0.5)
             continue
         try:
             current_price = ticker_response["Data"][currency]["LastPrice"]
         except (KeyError, TypeError) as e:
             print(now_datetime, f"Unexpected ticker response format: {ticker_response}, error: {e}")
-            time.sleep(1)
+            time.sleep(0.5)
             continue
         price_data_15min.append(current_price)
         if len(price_data_15min) > (60 * time_frame):
             price_data_15min = price_data_15min[-(60 * time_frame):]
-        if len(price_data_15min) == (60 * time_frame) and \
-        now_datetime.minute % time_frame == 0 and \
-        now_datetime.second == 0:
-            high = max(price_data_15min)
-            low = min(price_data_15min)
+        if len(price_data_15min) >= (60 * time_frame) and \
+            now_datetime.minute % time_frame == 0:
+            high = max(price_data_15min[-(60 * time_frame)])
+            low = min(price_data_15min[-(60 * time_frame)])
             if bars:
                 true_range = max(high - low, abs(high - last_close), abs(low - last_close))
             else:
@@ -306,15 +335,6 @@ while True:
             print(now_datetime,": ", bar)
     
     if now_datetime.minute % time_frame == 0 and now_datetime.second == 0 and bars:
-        # calculate the 20 bar highest    
-        close_price_15min = bars[-1]["close"]
-        price_data_20high.append(close_price_15min)
-        if len(price_data_20high) > 21:
-            price_data_20high = price_data_20high[-21:]
-        if len(price_data_20high) == 21:
-            highest_20bar = max(price_data_20high[-21:-1])
-            #print ("20 bar high: ", highest_20bar)
-        
         # caculate atr14
         if len(TrueRangeList) > ATR_period + 1:
             TrueRangeList = TrueRangeList[-23:]
@@ -339,12 +359,9 @@ while True:
                 lows = [bar["low"] for bar in bars[-ATR_period:]]
                 highest = max(highs)
                 lowest = min(lows)
-    
             ce_atr = 3.5 * atr
-    
             long_stop = highest - ce_atr
             short_stop = lowest + ce_atr
-    
             if long_stop_prev is None:
                 # Initial setup
                 long_stop_prev = long_stop
@@ -356,22 +373,19 @@ while True:
                     long_stop = max(long_stop, long_stop_prev)
                 if close_prev < short_stop_prev:
                     short_stop = min(short_stop, short_stop_prev)
-    
             # Calculate direction using current close and previous stops
             current_close = bars[-1]["close"]
             prev_dir = dir
-            if current_close > short_stop_prev:
+            if current_close > short_stop:
                 dir = 1
-            elif current_close < long_stop_prev:
+            elif current_close < long_stop:
                 dir = -1
             else:
                 dir = prev_dir
-    
-    # Update prev stops for next bar
+            # Update prev stops for next bar
             long_stop_prev = long_stop
             short_stop_prev = short_stop
-    
-    # Generate signals
+            # Generate signals
             buy_signal = (dir == 1) and (prev_dir == -1)
             sell_signal = (dir == -1) and (prev_dir == 1)
 
@@ -411,60 +425,68 @@ while True:
                     supertrend = down if close < prev_up else up
     
             is_uptrend = supertrend < close  # Uptrend if supertrend below price
-    
+
             # Update prev for next bar
             prev_up = up
             prev_down = down
             prev_supertrend = supertrend
 
-
-        # caculate RSI
-        if len(bars) > 14:
-            closes = [bar["close"] for bar in bars[-15:]]
-            deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-            positive_sum = sum(dp for dp in deltas if dp > 0)
-            negative_sum = sum(abs(dp) for dp in deltas if dp < 0)
-            Avg_gain = positive_sum / 14
-            Avg_loss = negative_sum / 14
-            if Avg_loss == 0:
-                RSI = 100
-            else:
-                RS = Avg_gain / Avg_loss
-                RSI = 100 - (100/(1 + (RS)))
-            #print (RSI)
-
-    if current_price > highest_20bar:
-        high_bar_20Trigger = True
-    else:
-        high_bar_20Trigger = False
-    ATR_compare = (1.5 * ATR_5_avg)
-    if atr > ATR_compare:
-        ATR_trigger = True
-    else:
-        ATR_trigger = False
-    if RSI < 75:
-        RSI_trigger = True
-    else:
-        RSI_trigger = False
-    
     if buy_signal and not Have_order and is_uptrend:
-        usd_free = get_balance().get('SpotWallet', {}).get('USD', {}).get('Free', 0)
-        print(now_datetime, " Previous USD Free Balance:", usd_free)
-        amount = usd_free / current_price
-        int_amount = round(amount, 3) - 0.005
-        print(now_datetime, ": ", place_order(currency, "BUY", int_amount))
-        enter_price = current_price
-        enter_amount = int_amount
-        print("Enter Price: ", enter_price, "Enter Amount: ", enter_amount)
-        print(get_balance())
-        Have_order = True
+        balance_info = get_balance()
+        if balance_info is None:
+            print(now_datetime, " Failed to fetch balance. Skipping buy.")
+        else:
+            usd_free = float(balance_info.get('SpotWallet', {}).get('USD', {}).get('Free', 0))
+            print(now_datetime, "USD Free Balance:", usd_free)
+            if usd_free <= 0:
+                print(now_datetime, " Insufficient USD balance.")
+            else:
+                amount = usd_free / current_price
+                int_amount = round(amount, 3) - 0.005
+                if int_amount <= 0:
+                    print(now_datetime, " Calculated buy amount is non-positive.")
+                else:
+                    order_reply = place_order_with_retry(currency, "BUY", int_amount, max_retries=5)
+                    if order_reply is not None:
+                    # Extract filled price and quantity from OrderDetail if available
+                        order_detail = order_reply.get("OrderDetail", {})
+                        enter_price = order_detail.get("FilledAverPrice", current_price)  # fallback to current price
+                        enter_amount = order_detail.get("FilledQuantity", int_amount)     # fallback to requested amount
+                        Have_order = True
+                        print(now_datetime, f" Position opened: {enter_amount} @ {enter_price}")
+                    else:
+                        print(now_datetime, " Failed to open position after retries.")
         
     if Have_order:
-        order_PL = ((current_price - enter_price)/enter_price) * 100
-        print (now_datetime, " Current P/L: ", order_PL)
-        if (order_PL <= -3.5) or (order_PL >= 5.4) or sell_signal:
-            place_order(currency, "SELL", enter_amount)
-            print (now_datetime, ": ", get_balance())
+        if enter_price and enter_price > 0:
+            order_PL = ((current_price - enter_price) / enter_price) * 100
+        else:
+            print(now_datetime, "Invalid enter_price. Resetting position.")
             Have_order = False
-
-    time.sleep(0.5)
+            continue
+        if (order_PL <= -2.5) or (order_PL >= 5.4) or sell_signal:
+            print(now_datetime, f" Triggering sell (P/L: {order_PL:.2f}%)")
+        
+            balance_info = get_balance()
+            if balance_info is None:
+                print(now_datetime, " Failed to fetch balance. Cannot sell.")
+            else:
+                eth_free = float(balance_info.get('SpotWallet', {}).get('ETH', {}).get('Free', 0))
+                if eth_free <= 0:
+                    print(now_datetime, " No ETH to sell. Resetting position.")
+                    Have_order = False
+                else:
+                    order_reply = place_order_with_retry(currency, "SELL", eth_free, max_retries=5)
+                    if order_reply is not None:
+                        # Optionally log filled details
+                        order_detail = order_reply.get("OrderDetail", {})
+                        filled_qty = order_detail.get("FilledQuantity", eth_free)
+                        filled_price = order_detail.get("FilledAverPrice", current_price)
+                        print(now_datetime, f" Sold {filled_qty} ETH @ avg {filled_price}")
+                        Have_order = False
+                    else:
+                        print(now_datetime, " Failed to close position after retries.")
+    
+    next_run += 1
+    sleep_time = max(0, next_run - time.time())
+    time.sleep(sleep_time)
