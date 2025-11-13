@@ -317,8 +317,8 @@ while True:
             price_data_15min = price_data_15min[-(60 * time_frame):]
         if len(price_data_15min) >= (60 * time_frame) and \
             now_datetime.minute % time_frame == 0:
-            high = max(price_data_15min[-(60 * time_frame)])
-            low = min(price_data_15min[-(60 * time_frame)])
+            high = max(price_data_15min)
+            low = min(price_data_15min)
             if bars:
                 true_range = max(high - low, abs(high - last_close), abs(low - last_close))
             else:
@@ -466,7 +466,6 @@ while True:
             continue
         if (order_PL <= -2.5) or (order_PL >= 5.4) or sell_signal:
             print(now_datetime, f" Triggering sell (P/L: {order_PL:.2f}%)")
-        
             balance_info = get_balance()
             if balance_info is None:
                 print(now_datetime, " Failed to fetch balance. Cannot sell.")
