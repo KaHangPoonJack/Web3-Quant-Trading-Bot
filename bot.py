@@ -1,15 +1,14 @@
 import requests
+import os
 import time
 import hmac
 import hashlib
 import pandas as pd
 import numpy as np
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
-from flask import Flask, render_template_string
-import plotly.graph_objects as go
 from urllib.parse import urlparse
-import math
 # ================================
 # Configuration and Setup
 # ================================
@@ -19,20 +18,15 @@ API_KEY = "R5tY9uIpcN3vB1kMH7qD2wXaL0oG6eZfsP8jK4QraV1mT7UyxC5nF3WdJ2yS8lGo"
 SECRET_KEY = "L9ZxCV1bN3mQwE5rT7yUiP9oA1sDdF3gJ5hKlZ7xC9vBnM1qW3eRtY5uI7oP"
 HORUS_URL = "https://api-horus.com"
 HORUS_API_KEY = "dcca142de11f3c3a6db14d91757a8ed2dc9bd8ebbd92103d65946deecf82e9ee"
-BINANCE_URL = "wss://stream.binance.com:9443"
+COINBASE_URL = "https://api.exchange.coinbase.com"
+CURRENCY_COINBASE = "ETH-USD"
 
 # --- STATE ---
-price_data_20high = []
-price_data_15min = []
 last_second = -1
 currency = "ETH/USD"
 bars = []
 TrueRangeList = []
-atr_averageList = []
 
-high_bar_20Trigger = False
-ATR_trigger = False
-RSI_trigger = False
 Have_order = False
 use_close = True
 long_stop = None
@@ -60,7 +54,6 @@ ATR_period = 22
 highest_20bar = 0
 ATR_5_avg = 0
 atr = 0
-RSI = 0
 enter_amount = 0
 enter_price = 0
 current_price = 0
@@ -285,11 +278,126 @@ def place_order_with_retry(pair, side, quantity, max_retries=5, delay_base=1.0):
 # TECHNICAL INDICATORS
 # ================================
 
+def get_historical_candles(symbol: str = CURRENCY_COINBASE, limit: int = ATR_period + 50) -> List[Dict]:
+    """Fetch historical 15m candles from Coinbase (public, no key)."""
+    url = f"{COINBASE_URL}/products/{symbol}/candles"
+    params = {"granularity": time_frame * 60, "limit": limit}  # 900 sec = 15 min
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        raw = res.json()  # Newest first: [[time_sec, low, high, open, close, vol], ...]
+        candles = []
+        for c in reversed(raw):  # Reverse to oldest first
+            candles.append({
+                "open_time": c[0] * 1000,  # sec to ms (if needed; optional)
+                "high": float(c[2]),
+                "low": float(c[1]),
+                "close": float(c[4])
+            })
+        return candles
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching historical candles: {e}")
+        return []
 
+def fetch_latest_candle(symbol: str = CURRENCY_COINBASE) -> Optional[Dict]:
+    """Fetch the latest closed 15m candle from Coinbase."""
+    url = f"{COINBASE_URL}/products/{symbol}/candles"
+    params = {"granularity": 900, "limit": 1}
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        raw = res.json()[0]  # [time_sec, low, high, open, close, vol]
+        return {
+            "open_time": raw[0] * 1000,
+            "high": float(raw[2]),
+            "low": float(raw[1]),
+            "close": float(raw[4])
+        }
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching latest candle: {e}")
+        return None
+
+# ================================
+# BACKTEST ENGINE
+# ================================
 
 # ================================
 # MAIN
 # ================================
+# Load historical 15m candles from Coinbase (instant startup)
+historical_candles = get_historical_candles()
+if not historical_candles:
+    print("Failed to load historical candles. Using empty bars.")
+else:
+    last_close = 0.0
+    for i, candle in enumerate(historical_candles):
+        high = candle["high"]
+        low = candle["low"]
+        close = candle["close"]
+        if i == 0:
+            true_range = high - low
+        else:
+            true_range = max(high - low, abs(high - last_close), abs(low - last_close))
+        bar = {"high": high, "low": low, "close": close, "TrueRange": true_range}
+        bars.append(bar)
+        TrueRangeList.append(true_range)
+        last_close = close
+    print(f"Loaded {len(bars)} historical bars from Coinbase. Last close: {last_close}")
+
+# ================================
+# CORRECT: Initialize Indicators (Run ONCE on last historical bar)
+# ================================
+if len(bars) >= ATR_period:  # Need at least 22 bars
+    print(f"Initializing indicators using {len(bars)} historical bars...")
+
+    # --- 1. Calculate ATR (22-period) ---
+    if len(TrueRangeList) >= ATR_period:
+        # Use last 22 True Ranges
+        atr = np.mean(TrueRangeList[-ATR_period:]) if len(TrueRangeList) > ATR_period else np.mean(TrueRangeList[-ATR_period:])
+        print(f"  → Initial ATR ({ATR_period}-period): {atr:.4f}")
+
+    # --- 2. Chandelier Exit ---
+    closes = [b["close"] for b in bars[-ATR_period:]]
+    highest = max(closes)
+    lowest = min(closes)
+    ce_atr = 3.5 * atr
+    long_stop = highest - ce_atr
+    short_stop = lowest + ce_atr
+
+    # Set initial previous stops
+    long_stop_prev = long_stop
+    short_stop_prev = short_stop
+
+    current_close = bars[-1]["close"]
+    if current_close > short_stop:
+        dir = 1
+    elif current_close < long_stop:
+        dir = -1
+    else:
+        dir = 1  # default up
+    print(f"  → CE: long_stop={long_stop:.2f}, short_stop={short_stop:.2f}, dir={dir}")
+
+    # --- 3. Supertrend ---
+    if len(TrueRangeList) >= st_atr_period:
+        tr_list = TrueRangeList[-st_atr_period:]
+        st_atr = np.mean(tr_list)
+        high = bars[-1]["high"]
+        low = bars[-1]["low"]
+        close = bars[-1]["close"]
+        hl2 = (high + low) / 2
+        up = hl2 - (st_factor * st_atr)
+        down = hl2 + (st_factor * st_atr)
+
+        # Initialize prev values
+        prev_up = up
+        prev_down = down
+        prev_supertrend = up
+        is_uptrend = close > up
+        print(f"  → Supertrend: up={up:.2f}, close={close:.2f}, is_uptrend={is_uptrend}")
+    print("Indicator initialization complete. Ready for live trading.")
+else:
+    print(f"Only {len(bars)} bars loaded. Need {ATR_period} for full init. Building in real-time...")
+
 next_run = time.time()
 while True:
     now_datetime = datetime.now()
@@ -312,40 +420,32 @@ while True:
             print(now_datetime, f"Unexpected ticker response format: {ticker_response}, error: {e}")
             time.sleep(0.5)
             continue
-        price_data_15min.append(current_price)
-        if len(price_data_15min) > (60 * time_frame):
-            price_data_15min = price_data_15min[-(60 * time_frame):]
-        if len(price_data_15min) >= (60 * time_frame) and \
-            now_datetime.minute % time_frame == 0:
-            high = max(price_data_15min)
-            low = min(price_data_15min)
-            if bars:
-                true_range = max(high - low, abs(high - last_close), abs(low - last_close))
-            else:
-                true_range = high - low
-            bar = {"high": high,
-                   "low": low,
-                   "close": current_price,
-                   "TrueRange": true_range}
-            bars.append(bar)
-            prev_price = last_close
-            last_close = current_price
-            TrueRangeList.append(true_range)
-            price_data_15min = []
-            print(now_datetime,": ", bar)
+        
     
     if now_datetime.minute % time_frame == 0 and now_datetime.second == 0 and bars:
-        # caculate atr14
+        latest_candle = fetch_latest_candle()
+        if latest_candle is None:
+            print(now_datetime, "Failed to fetch latest candle, try again")
+            time.sleep(0.5)
+            latest_candle = fetch_latest_candle()
+        else:
+            high = latest_candle["high"]
+            low = latest_candle["low"]
+            close = latest_candle["close"]
+            true_range = max(high - low, abs(high - last_close), abs(low - last_close))
+            bar = {"high": high, "low": low, "close": close, "TrueRange": true_range}
+            bars.append(bar)
+            TrueRangeList.append(true_range)
+            last_close = close  # Update for next TR
+            print(now_datetime, ": New bar from Coinbase:", bar)
+        if len(bars) > 100:
+            bars = bars[-100:]
+            
+        # caculate atr22
         if len(TrueRangeList) > ATR_period + 1:
-            TrueRangeList = TrueRangeList[-23:]
+            TrueRangeList = TrueRangeList[-(ATR_period + 1):]
         if len(TrueRangeList) == ATR_period + 1:
-            atr = np.mean(TrueRangeList[-23: -1])
-            atr_averageList.append(atr)
-            if len(atr_averageList) > 5:
-                atr_averageList = atr_averageList[-5:]
-            if len(atr_averageList) == 5:
-                ATR_5_avg = np.mean(atr_averageList[-5:])
-                print (now_datetime, " ATR_5_avg: ", ATR_5_avg)
+            atr = np.mean(TrueRangeList[-ATR_period:])
             print (now_datetime, " Average True Range: ", atr)
 
         # caculate CE
@@ -403,29 +503,23 @@ while True:
             up = hl2 - (st_factor * st_atr)
             down = hl2 + (st_factor * st_atr)
     
-            if prev_up == 0:  # Initial setup on first calculation
-                prev_up = up
-                prev_down = down
-                prev_supertrend = up  # Arbitrary start, as in standard Supertrend
-            else:
-                close_prev = bars[-2]["close"]
+            close_prev = bars[-2]["close"]
         
                 # Trail up
-                if close_prev > prev_up:
-                    up = max(up, prev_up)
+            if close_prev > prev_up:
+                up = max(up, prev_up)
         
                 # Trail down
-                if close_prev < prev_down:
-                    down = min(down, prev_down)
+            if close_prev < prev_down:
+                down = min(down, prev_down)
         
                 # Determine supertrend
-                if prev_supertrend == prev_up:
-                    supertrend = up if close > prev_down else down
-                else:
-                    supertrend = down if close < prev_up else up
+            if prev_supertrend == prev_up:
+                supertrend = up if close > prev_down else down
+            else:
+                supertrend = down if close < prev_up else up
     
             is_uptrend = supertrend < close  # Uptrend if supertrend below price
-
             # Update prev for next bar
             prev_up = up
             prev_down = down
@@ -464,9 +558,10 @@ while True:
             print(now_datetime, "Invalid enter_price. Resetting position.")
             Have_order = False
             continue
-        if (order_PL <= -2.5) or (order_PL >= 5.4) or sell_signal:
+        if (order_PL <= -2.5) or (order_PL >= 5) or sell_signal:
             print(now_datetime, f" Triggering sell (P/L: {order_PL:.2f}%)")
             balance_info = get_balance()
+            print(balance_info)
             if balance_info is None:
                 print(now_datetime, " Failed to fetch balance. Cannot sell.")
             else:
@@ -482,6 +577,7 @@ while True:
                         filled_qty = order_detail.get("FilledQuantity", eth_free)
                         filled_price = order_detail.get("FilledAverPrice", current_price)
                         print(now_datetime, f" Sold {filled_qty} ETH @ avg {filled_price}")
+                        print(get_balance())
                         Have_order = False
                     else:
                         print(now_datetime, " Failed to close position after retries.")
