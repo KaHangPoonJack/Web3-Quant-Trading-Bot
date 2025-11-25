@@ -20,3 +20,5 @@ ATR (10) Supertrend: (Period = 10, Mutiplier = 3)
 
 Further improvement:
 A shorter term ATR can be used, for example: period = 2, multi = 1. It can provide a sign for quicker exit during trade. Solve the problem of late exit as CE Short direction require great draw down in candle which loss a lot of potential gain.
+
+bot.py is where our bot located.
